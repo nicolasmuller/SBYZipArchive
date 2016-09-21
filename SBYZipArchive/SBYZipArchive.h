@@ -9,8 +9,6 @@
 #import <Foundation/Foundation.h>
 #import "SBYZipEntry.h"
 
-@protocol SBYZipArchiveDelegate;
-
 NS_ASSUME_NONNULL_BEGIN
 
 @interface SBYZipArchive : NSObject
@@ -28,6 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
            success:(nullable void (^)(NSURL *unzippedFileLocation))success
            failure:(nullable void (^)(NSError *error))failure
           progress:(nullable void (^)(NSUInteger bytesUnzipped, NSUInteger totalBytes))progress;
+
 @end
 
 extern NSString* const SBYZipArchiveErrorDomain;

@@ -13,7 +13,7 @@ NSString* const SBYZipArchiveErrorDomain = @"SBYZipArchiveErrorDomain";
 
 static const NSUInteger SBYZipArchiveBufferSize = 4096;
 
-@interface SBYZipArchive () <NSStreamDelegate>
+@interface SBYZipArchive ()
 @property (nonatomic, readwrite) NSURL *url;
 @property (nonatomic) unzFile unzFile;
 @property (nonatomic) NSMutableArray<SBYZipEntry *> *cachedEntries;
@@ -119,9 +119,9 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
         
         NSString *fileName = [NSString stringWithUTF8String:file_name];
         SBYZipEntry *entry = [[SBYZipEntry alloc] initWithArchive:self
-                                                         fileName:fileName
-                                                         fileSize:file_info.uncompressed_size
-                                                           offset:offset];
+                                                               fileName:fileName
+                                                               fileSize:file_info.uncompressed_size
+                                                                 offset:offset];
         
         [self.cachedEntries addObject:entry];
         
@@ -139,7 +139,7 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
         return;
     }
     
-    NSURL *fullPath = [url URLByAppendingPathComponent:entry.fileName];
+    NSURL *fullPath = url;
     
     NSFileManager *fileManger = [[NSFileManager alloc] init];
     
@@ -148,13 +148,7 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
         NSError *error = [NSError errorWithDomain:SBYZipArchiveErrorDomain code:SBYZipArchiveErrorCannotUnzipEntryFile userInfo:userInfo];
         
         if (failure) {
-            if ([NSThread isMainThread]) {
-                failure(error);
-            } else {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    failure(error);
-                });
-            }
+            failure(error);
         }
         return;
     }
@@ -168,22 +162,14 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
             NSError *error = [NSError errorWithDomain:SBYZipArchiveErrorDomain code:SBYZipArchiveErrorCannotUnzipEntryFile userInfo:userInfo];
             
             if (failure) {
-                if ([NSThread isMainThread]) {
-                    failure(error);
-                } else {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        failure(error);
-                    });
-                }
+                failure(error);
             }
             
             return;
         }
     }
-    
-    // start lock
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC);
-    dispatch_semaphore_wait(self.semaphore, timeout);
+
+    dispatch_semaphore_wait(self.semaphore, DISPATCH_TIME_FOREVER);
     
     self.unzipDestinationURL = fullPath;
     self.bytesUnzipped = 0;
@@ -196,21 +182,37 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
     unzSetOffset(self.unzFile, entry.offset);
     unzOpenCurrentFile(self.unzFile);
     
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        self.outputStream = [[NSOutputStream alloc] initWithURL:fullPath append:YES];
-        self.outputStream.delegate = self;
-        [self.outputStream scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    self.outputStream = [[NSOutputStream alloc] initWithURL:fullPath append:YES];
+    [self.outputStream open];
+    
+    while (1) {
+        NSMutableData *buffer = [[NSMutableData alloc] initWithLength:SBYZipArchiveBufferSize];
+        int readBytes = unzReadCurrentFile(self.unzFile, [buffer mutableBytes], (unsigned int)buffer.length);
         
-        [self.outputStream open];
-        
-        [[NSRunLoop currentRunLoop] run];
-    });
+        if (readBytes == 0) { // completed
+            [self closeStream:self.outputStream];
+            [self callSuccessBlock];
+            break;
+        } else if (readBytes < 0) { // error
+            int unz_err = readBytes;
+            NSString *localizedDescription = [self localizedDescriptionForUnzError:unz_err];
+            NSError *error = [NSError errorWithDomain:SBYZipArchiveErrorDomain code:SBYZipArchiveErrorCannotUnzipEntryFile userInfo:@{NSLocalizedDescriptionKey: localizedDescription}];
+            
+            [self closeStream:self.outputStream];
+            [self callFailureBlockWithError:error];
+            break;
+        } else {
+            [self.outputStream write:[buffer bytes] maxLength:readBytes];
+            
+            self.bytesUnzipped += readBytes;
+            [self callProgressBlock];
+        }
+    }
 }
 
 - (void)closeStream:(NSStream *)stream
 {
     [stream close];
-    [stream removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
     self.outputStream = nil;
     
     // end lock
@@ -222,59 +224,6 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
     self.progressBlock = nil;
     self.successBlock = nil;
     self.failureBlock = nil;
-}
-
-#pragma mark - NSStreamDelegate
-
-- (void)stream:(NSStream *)stream handleEvent:(NSStreamEvent)eventCode
-{
-    switch (eventCode) {
-        case NSStreamEventHasSpaceAvailable:
-        {
-            NSMutableData *buffer = [[NSMutableData alloc] initWithLength:SBYZipArchiveBufferSize];
-            int readBytes = unzReadCurrentFile(self.unzFile, [buffer mutableBytes], (unsigned int)buffer.length);
-            
-            if (readBytes == 0) { // completed
-                [self callSuccessBlock];
-                [self closeStream:stream];
-            } else if (readBytes < 0) { // error
-                int unz_err = readBytes;
-                NSString *localizedDescription = [self localizedDescriptionForUnzError:unz_err];
-                NSError *error = [NSError errorWithDomain:SBYZipArchiveErrorDomain code:SBYZipArchiveErrorCannotUnzipEntryFile userInfo:@{NSLocalizedDescriptionKey: localizedDescription}];
-                
-                [self callFailureBlockWithError:error];
-                [self closeStream:stream];
-            } else {
-                [(NSOutputStream *)stream write:[buffer bytes] maxLength:readBytes];
-                
-                self.bytesUnzipped += readBytes;
-                [self callProgressBlock];
-            }
-            
-            break;
-        }
-        case NSStreamEventErrorOccurred:
-        {
-            NSDictionary *userInfo = @{NSLocalizedDescriptionKey: @"Failed to unzip the entry file."};
-            NSError *error = [NSError errorWithDomain:SBYZipArchiveErrorDomain code:SBYZipArchiveErrorCannotUnzipEntryFile userInfo:userInfo];
-            
-            [self callFailureBlockWithError:error];
-            [self closeStream:stream];
-            
-            break;
-        }
-        case NSStreamEventEndEncountered:
-        {
-            [self callSuccessBlock];
-            [self closeStream:stream];
-            
-            break;
-        }
-        default:
-        {            
-            break;
-        }
-    }
 }
 
 #pragma mark - Privete Methods
@@ -304,9 +253,7 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
         typeof(self.successBlock) successBlock = self.successBlock;
         typeof(self.unzipDestinationURL) unzipDestinationURL = self.unzipDestinationURL;
         [self releaseBlocks];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            successBlock(unzipDestinationURL);
-        });
+        successBlock(unzipDestinationURL);
     }
 }
 
@@ -315,9 +262,7 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
     if (self.failureBlock) {
         typeof(self.failureBlock) failureBlock = self.failureBlock;
         [self releaseBlocks];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            failureBlock(error);
-        });
+        failureBlock(error);
     }
 }
 
@@ -327,9 +272,7 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
         typeof(self.progressBlock) progressBlock = self.progressBlock;
         NSUInteger bytesUnzipped = self.bytesUnzipped;
         NSUInteger totalBytes = self.totalBytes;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            progressBlock(bytesUnzipped, totalBytes);
-        });
+        progressBlock(bytesUnzipped, totalBytes);
     }
 }
 
