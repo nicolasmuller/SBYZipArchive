@@ -184,9 +184,10 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
     
     self.outputStream = [[NSOutputStream alloc] initWithURL:fullPath append:YES];
     [self.outputStream open];
-    
+
+    NSMutableData *buffer = [[NSMutableData alloc] initWithLength:SBYZipArchiveBufferSize];
+
     while (1) {
-        NSMutableData *buffer = [[NSMutableData alloc] initWithLength:SBYZipArchiveBufferSize];
         int readBytes = unzReadCurrentFile(self.unzFile, [buffer mutableBytes], (unsigned int)buffer.length);
         
         if (readBytes == 0) { // completed
