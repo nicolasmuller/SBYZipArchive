@@ -103,9 +103,11 @@ NSString *convertEncodedString(const char *encodedString) {
     
     if (decodedString == nil) {
         decodedString = [[NSString alloc] initWithData:data encoding:0x80000400];
+        NSLog(@"[Warning] fileName Zip (%s) is not UTF-8 encoding compliant", encodedString);
     }
     if (decodedString == nil) {
         decodedString = [[NSString alloc] initWithData:data encoding:[NSString defaultCStringEncoding]];
+        NSLog(@"[Warning] fileName Zip (%s) is not Latin (DOS) encoding compliant", encodedString);
     }
     return decodedString;
 }
