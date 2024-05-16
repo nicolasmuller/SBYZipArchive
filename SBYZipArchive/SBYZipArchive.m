@@ -97,6 +97,19 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
     return data;
 }
 
+NSString *convertEncodedString(const char *encodedString) {
+    NSData *data = [NSData dataWithBytes:encodedString length:strlen(encodedString)];
+    NSString *decodedString = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    
+    if (decodedString == nil) {
+        decodedString = [[NSString alloc] initWithData:data encoding:0x80000400];
+    }
+    if (decodedString == nil) {
+        decodedString = [[NSString alloc] initWithData:data encoding:[NSString defaultCStringEncoding]];
+    }
+    return decodedString;
+}
+
 - (BOOL)loadEntriesWithError:(NSError *__autoreleasing *)error
 {
     self.cachedEntries = [NSMutableArray array];
@@ -117,7 +130,7 @@ static const NSUInteger SBYZipArchiveBufferSize = 4096;
         
         NSUInteger offset = unzGetOffset(self.unzFile);
         
-        NSString *fileName = [NSString stringWithUTF8String:file_name];
+        NSString *fileName = convertEncodedString(file_name);
         SBYZipEntry *entry = [[SBYZipEntry alloc] initWithArchive:self
                                                                fileName:fileName
                                                                fileSize:file_info.uncompressed_size
